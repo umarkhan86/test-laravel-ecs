@@ -139,25 +139,28 @@ jobs:
           echo "   - $REPO:$TAG"
           echo "   - $REPO:latest"
 
-      # ============================================
-      # STEP 8: Download current ECS task definition
+ # ============================================
+      # STEP 8: Download current ECS task definition (FIXED HERE)
       # We need the existing task definition as a template
       # ============================================
       - name: Download current task definition
         run: |
-          echo "📥 Downloading current task definition..."
+          echo "📥 Downloading current task definition and cleaning metadata..."
+          
+          # Use 'jq' to strip all fields that 'register-task-definition' doesn't allow.
+          # The key culprit, 'enableFaultInjection', is included here.
           aws ecs describe-task-definition \
             --task-definition ${{ steps.envvalues.outputs.task }} \
-            --query taskDefinition > task-definition.json
+            --query taskDefinition | \
+            jq 'del(.taskDefinitionArn, .revision, .status, .compatibilities, .requiresAttributes, .registeredAt, .deregisteredAt, .tags, .enableFaultInjection)' \
+            > task-definition.json
           
-          echo "✅ Current task definition downloaded"
-          # Show the container image currently in use (for comparison)
+          echo "✅ Current task definition downloaded and cleaned"
           echo "Current image:"
           cat task-definition.json | grep -A 2 '"image":'
 
       # ============================================
       # STEP 9: Update task definition with NEW image
-      # This creates a NEW task definition revision with updated image
       # ============================================
       - name: Update task definition with new image
         id: task-def
@@ -169,10 +172,6 @@ jobs:
 
       # ============================================
       # STEP 10: Deploy to ECS
-      # This does 3 things:
-      # 1. Registers the new task definition revision
-      # 2. Updates the ECS service to use the new revision
-      # 3. Waits for deployment to complete successfully
       # ============================================
       - name: Deploy to ECS
         uses: aws-actions/amazon-ecs-deploy-task-definition@v1
@@ -181,15 +180,12 @@ jobs:
           service: ${{ steps.envvalues.outputs.service }}
           cluster: ${{ steps.envvalues.outputs.cluster }}
           wait-for-service-stability: true
-          # This waits until new tasks are running and healthy
-          # and old tasks are stopped (can take 5-10 minutes)
 
       # ============================================
       # STEP 11: Cleanup sensitive files
-      # Remove .env file from GitHub Actions runner
       # ============================================
       - name: Cleanup
-        if: always()  # Run even if previous steps fail
+        if: always()
         run: |
           echo "🧹 Cleaning up sensitive files..."
           rm -f .env task-definition.json
