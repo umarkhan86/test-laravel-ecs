@@ -35,7 +35,7 @@ jobs:
             echo "cluster=abcabcabc" >> $GITHUB_OUTPUT
             echo "service=task-def-service-365spwxy" >> $GITHUB_OUTPUT
             echo "task=task-def" >> $GITHUB_OUTPUT
-            echo "repo=767828751245.dkr.ecr.us-east-1.amazonaws.com/" >> $GITHUB_OUTPUT
+            echo "repo=767828751245.dkr.ecr.us-east-1.amazonaws.com/testlaravel" >> $GITHUB_OUTPUT
             echo "container=laravel" >> $GITHUB_OUTPUT
           else
             # STAGING environment values
