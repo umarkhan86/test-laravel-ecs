@@ -1,4 +1,4 @@
-name: CI CD to ECS for (MoneyFlex) ##hahaha
+name: CI CD to ECS for (MoneyFlex)
 
 on: 
   push:
@@ -13,8 +13,8 @@ concurrency:
 jobs:
   deploy: 
     runs-on: ubuntu-latest
-    env:
-      AWS_REGION: us-east-1
+    # REMOVED FIXED AWS_REGION here. It will be determined dynamically in Step 2 
+    # and passed explicitly to Steps 4 and 5.
     
     steps:
       # ============================================
@@ -25,7 +25,6 @@ jobs:
 
       # ============================================
       # STEP 2: Set environment-specific variables
-      # Different values for 'main' vs 'stagging' branch
       # ============================================
       - name: Set environment values per branch
         id: envvalues
@@ -37,6 +36,9 @@ jobs:
             echo "task=task-def" >> $GITHUB_OUTPUT
             echo "repo=767828751245.dkr.ecr.us-east-1.amazonaws.com/testlaravel" >> $GITHUB_OUTPUT
             echo "container=laravel" >> $GITHUB_OUTPUT
+            # ADDED: Set the region to match the ECR repository
+            echo "aws_region=us-east-1" >> $GITHUB_OUTPUT
+            echo "Using ECR Region: us-east-1"
           else
             # STAGING environment values
             echo "cluster=moneyflex-staging-cluster" >> $GITHUB_OUTPUT
@@ -44,24 +46,23 @@ jobs:
             echo "task=moneyflex-staging-td" >> $GITHUB_OUTPUT
             echo "repo=767398014935.dkr.ecr.me-central-1.amazonaws.com/moneyflex-ecr-staging" >> $GITHUB_OUTPUT
             echo "container=moneyflex-staging-container" >> $GITHUB_OUTPUT
+            # ADDED: Set the region to match the ECR repository
+            echo "aws_region=me-central-1" >> $GITHUB_OUTPUT
+            echo "Using ECR Region: me-central-1"
           fi
 
       # ============================================
       # STEP 3: Create .env file from GitHub Secret
-      # This is CRITICAL - Laravel needs .env file inside container
       # ============================================
       - name: Create .env file from secret
         run: |
           if [[ "${GITHUB_REF##*/}" == "main" ]]; then
-            # Use production environment variables
             echo "${{ secrets.ENV_PROD_FILE }}" > .env
             echo "✅ Created .env from ENV_PROD_FILE secret"
           else
-            # Use staging environment variables
             echo "${{ secrets.ENV_STAGING_FILE }}" > .env
             echo "✅ Created .env from ENV_STAGING_FILE secret"
           fi
-          # Verify file was created (don't show contents for security)
           if [ -f .env ]; then
             echo "✅ .env file exists and is ready for Docker build"
             ls -lh .env
@@ -71,44 +72,39 @@ jobs:
           fi
 
       # ============================================
-      # STEP 4: Authenticate with AWS
+      # STEP 4: Authenticate with AWS (FIXED REGION BUG)
       # ============================================
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+          # CORRECTED: Use the dynamic region from Step 2 output for authentication
+          aws-region: ${{ steps.envvalues.outputs.aws_region }}
 
       # ============================================
-      # STEP 5: Login to AWS ECR (Elastic Container Registry)
-      # This allows us to push Docker images to ECR
+      # STEP 5: Login to AWS ECR (Elastic Container Registry) (FIXED REGION BUG)
       # ============================================
       - name: Login to ECR
         uses: aws-actions/amazon-ecr-login@v2
+        with:
+          # CORRECTED: Explicitly use the dynamic region from Step 2 output
+          region: ${{ steps.envvalues.outputs.aws_region }}
 
       # ============================================
       # STEP 6: Generate unique image tag
-      # This is IMPORTANT - it helps with:
-      # - Tracking which code version is deployed
-      # - Rolling back to previous versions if needed
-      # - Avoiding cache issues with 'latest' tag
       # ============================================
       - name: Generate image tag
         id: vars
         run: |
-          # Get short commit SHA (first 7 characters)
           SHORT_SHA=$(git rev-parse --short HEAD)
-          # Get current timestamp for uniqueness
           TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-          # Create tag: v-abc1234-20241204-143022
           TAG="v-${SHORT_SHA}-${TIMESTAMP}"
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
           echo "📦 Generated Docker image tag: ${TAG}"
 
       # ============================================
       # STEP 7: Build Docker image and push to ECR
-      # The .env file created in Step 3 is copied INTO the Docker image
       # ============================================
       - name: Build & push Docker image
         env:
@@ -117,38 +113,35 @@ jobs:
         run: |
           echo "🔨 Building Docker image..."
           
-          # Verify .env exists before build
           if [ ! -f .env ]; then
             echo "❌ ERROR: .env file not found!"
             exit 1
           fi
           
-          # Build image with the unique tag (includes .env file)
+          # 1. Build
           docker build -t $REPO:$TAG .
           
           echo "🏷️  Tagging image as 'latest'..."
-          # Also tag as 'latest' for convenience
           docker tag $REPO:$TAG $REPO:latest
           
           echo "⬆️  Pushing images to ECR..."
-          # Push both tags to ECR
+          # 2. Push
           docker push $REPO:$TAG
           docker push $REPO:latest
           
           echo "✅ Docker images pushed successfully!"
-          echo "   - $REPO:$TAG"
-          echo "   - $REPO:latest"
+          echo "    - $REPO:$TAG"
+          echo "    - $REPO:latest"
 
- # ============================================
-      # STEP 8: Download current ECS task definition (FIXED HERE)
-      # We need the existing task definition as a template
+      # ============================================
+      # STEP 8: Download current ECS task definition
       # ============================================
       - name: Download current task definition
         run: |
           echo "📥 Downloading current task definition and cleaning metadata..."
           
           # Use 'jq' to strip all fields that 'register-task-definition' doesn't allow.
-          # The key culprit, 'enableFaultInjection', is included here.
+          # This ensures a clean template for the next steps.
           aws ecs describe-task-definition \
             --task-definition ${{ steps.envvalues.outputs.task }} \
             --query taskDefinition | \
@@ -180,6 +173,7 @@ jobs:
           service: ${{ steps.envvalues.outputs.service }}
           cluster: ${{ steps.envvalues.outputs.cluster }}
           wait-for-service-stability: true
+          # The deployment step is contingent on the previous steps (Build & Push) succeeding.
 
       # ============================================
       # STEP 11: Cleanup sensitive files
