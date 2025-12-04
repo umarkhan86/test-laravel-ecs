@@ -45,11 +45,17 @@ ENV APACHE_DOCUMENT_ROOT=/var/www/html/public
 RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/sites-available/*.conf
 RUN sed -ri -e 's!/var/www/!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/apache2.conf /etc/apache2/conf-available/*.conf
 
-# Copy existing application directory contents
+# Copy composer files first for better caching
+COPY composer.json composer.lock /var/www/html/
+
+# Install Composer dependencies (without autoload files yet)
+RUN composer install --optimize-autoloader --no-dev --no-interaction --no-scripts --no-autoloader
+
+# Copy the rest of the application
 COPY . /var/www/html
 
-# Install Composer dependencies
-RUN composer install --optimize-autoloader --no-dev --no-interaction
+# Generate optimized autoload files
+RUN composer dump-autoload --optimize --no-dev
 
 # Create necessary directories and set permissions
 RUN mkdir -p storage/logs storage/framework/{sessions,views,cache} bootstrap/cache \
