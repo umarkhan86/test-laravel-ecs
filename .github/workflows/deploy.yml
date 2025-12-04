@@ -116,6 +116,13 @@ jobs:
           TAG: ${{ steps.vars.outputs.tag }}
         run: |
           echo "🔨 Building Docker image..."
+          
+          # Verify .env exists before build
+          if [ ! -f .env ]; then
+            echo "❌ ERROR: .env file not found!"
+            exit 1
+          fi
+          
           # Build image with the unique tag (includes .env file)
           docker build -t $REPO:$TAG .
           
