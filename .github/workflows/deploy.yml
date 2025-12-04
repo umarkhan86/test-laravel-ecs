@@ -1,6 +1,6 @@
 name: CI CD to ECS for (MoneyFlex)
 
-on: 
+on:
   push:
     branches:
       - main
@@ -11,89 +11,65 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deploy: 
+
+  # ============================================================
+  # JOB 1 — BUILD & PUSH DOCKER IMAGE
+  # ============================================================
+  build:
     runs-on: ubuntu-latest
-    # REMOVED FIXED AWS_REGION here. It will be determined dynamically in Step 2 
-    # and passed explicitly to Steps 4 and 5.
-    
+
+    outputs:
+      image_tag: ${{ steps.vars.outputs.tag }}
+      aws_region: ${{ steps.envvalues.outputs.aws_region }}
+      repo: ${{ steps.envvalues.outputs.repo }}
+      cluster: ${{ steps.envvalues.outputs.cluster }}
+      service: ${{ steps.envvalues.outputs.service }}
+      task: ${{ steps.envvalues.outputs.task }}
+      container: ${{ steps.envvalues.outputs.container }}
+
     steps:
-      # ============================================
-      # STEP 1: Get the code from GitHub repository
-      # ============================================
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # ============================================
-      # STEP 2: Set environment-specific variables
-      # ============================================
       - name: Set environment values per branch
         id: envvalues
         run: |
           if [[ "${GITHUB_REF##*/}" == "main" ]]; then
-            # PRODUCTION environment values
             echo "cluster=abcabcabc" >> $GITHUB_OUTPUT
             echo "service=task-def-service-365spwxy" >> $GITHUB_OUTPUT
             echo "task=task-def" >> $GITHUB_OUTPUT
             echo "repo=767828751245.dkr.ecr.us-east-1.amazonaws.com/testlaravel" >> $GITHUB_OUTPUT
             echo "container=laravel" >> $GITHUB_OUTPUT
-            # ADDED: Set the region to match the ECR repository
             echo "aws_region=us-east-1" >> $GITHUB_OUTPUT
-            echo "Using ECR Region: us-east-1"
           else
-            # STAGING environment values
             echo "cluster=moneyflex-staging-cluster" >> $GITHUB_OUTPUT
             echo "service=moneyflex-staging-service" >> $GITHUB_OUTPUT
             echo "task=moneyflex-staging-td" >> $GITHUB_OUTPUT
             echo "repo=767398014935.dkr.ecr.me-central-1.amazonaws.com/moneyflex-ecr-staging" >> $GITHUB_OUTPUT
             echo "container=moneyflex-staging-container" >> $GITHUB_OUTPUT
-            # ADDED: Set the region to match the ECR repository
             echo "aws_region=me-central-1" >> $GITHUB_OUTPUT
-            echo "Using ECR Region: me-central-1"
           fi
 
-      # ============================================
-      # STEP 3: Create .env file from GitHub Secret
-      # ============================================
-      - name: Create .env file from secret
+      - name: Create .env file
         run: |
           if [[ "${GITHUB_REF##*/}" == "main" ]]; then
             echo "${{ secrets.ENV_PROD_FILE }}" > .env
-            echo "✅ Created .env from ENV_PROD_FILE secret"
           else
             echo "${{ secrets.ENV_STAGING_FILE }}" > .env
-            echo "✅ Created .env from ENV_STAGING_FILE secret"
-          fi
-          if [ -f .env ]; then
-            echo "✅ .env file exists and is ready for Docker build"
-            ls -lh .env
-          else
-            echo "❌ ERROR: .env file was not created!"
-            exit 1
           fi
 
-      # ============================================
-      # STEP 4: Authenticate with AWS (FIXED REGION BUG)
-      # ============================================
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          # CORRECTED: Use the dynamic region from Step 2 output for authentication
           aws-region: ${{ steps.envvalues.outputs.aws_region }}
 
-      # ============================================
-      # STEP 5: Login to AWS ECR (Elastic Container Registry) (FIXED REGION BUG)
-      # ============================================
       - name: Login to ECR
         uses: aws-actions/amazon-ecr-login@v2
         with:
-          # CORRECTED: Explicitly use the dynamic region from Step 2 output
           region: ${{ steps.envvalues.outputs.aws_region }}
 
-      # ============================================
-      # STEP 6: Generate unique image tag
-      # ============================================
       - name: Generate image tag
         id: vars
         run: |
@@ -101,86 +77,65 @@ jobs:
           TIMESTAMP=$(date +%Y%m%d-%H%M%S)
           TAG="v-${SHORT_SHA}-${TIMESTAMP}"
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
-          echo "📦 Generated Docker image tag: ${TAG}"
 
-      # ============================================
-      # STEP 7: Build Docker image and push to ECR
-      # ============================================
       - name: Build & push Docker image
         env:
           REPO: ${{ steps.envvalues.outputs.repo }}
           TAG: ${{ steps.vars.outputs.tag }}
         run: |
-          echo "🔨 Building Docker image..."
-          
-          if [ ! -f .env ]; then
-            echo "❌ ERROR: .env file not found!"
-            exit 1
-          fi
-          
-          # 1. Build
           docker build -t $REPO:$TAG .
-          
-          echo "🏷️  Tagging image as 'latest'..."
           docker tag $REPO:$TAG $REPO:latest
-          
-          echo "⬆️  Pushing images to ECR..."
-          # 2. Push
           docker push $REPO:$TAG
           docker push $REPO:latest
-          
-          echo "✅ Docker images pushed successfully!"
-          echo "    - $REPO:$TAG"
-          echo "    - $REPO:latest"
 
-      # ============================================
-      # STEP 8: Download current ECS task definition
-      # ============================================
+      - name: Cleanup
+        if: always()
+        run: rm -f .env
+
+
+  # ============================================================
+  # JOB 2 — DEPLOY TO ECS
+  # Runs only after BUILD job is complete
+  # ============================================================
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ needs.build.outputs.aws_region }}
+
       - name: Download current task definition
         run: |
-          echo "📥 Downloading current task definition and cleaning metadata..."
-          
-          # Use 'jq' to strip all fields that 'register-task-definition' doesn't allow.
-          # This ensures a clean template for the next steps.
           aws ecs describe-task-definition \
-            --task-definition ${{ steps.envvalues.outputs.task }} \
+            --task-definition ${{ needs.build.outputs.task }} \
             --query taskDefinition | \
             jq 'del(.taskDefinitionArn, .revision, .status, .compatibilities, .requiresAttributes, .registeredAt, .deregisteredAt, .tags, .enableFaultInjection)' \
             > task-definition.json
-          
-          echo "✅ Current task definition downloaded and cleaned"
-          echo "Current image:"
-          cat task-definition.json | grep -A 2 '"image":'
 
-      # ============================================
-      # STEP 9: Update task definition with NEW image
-      # ============================================
-      - name: Update task definition with new image
+      - name: Update task definition
         id: task-def
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
           task-definition: task-definition.json
-          container-name: ${{ steps.envvalues.outputs.container }}
-          image: ${{ steps.envvalues.outputs.repo }}:${{ steps.vars.outputs.tag }}
+          container-name: ${{ needs.build.outputs.container }}
+          image: ${{ needs.build.outputs.repo }}:${{ needs.build.outputs.image_tag }}
 
-      # ============================================
-      # STEP 10: Deploy to ECS
-      # ============================================
       - name: Deploy to ECS
         uses: aws-actions/amazon-ecs-deploy-task-definition@v1
         with:
           task-definition: ${{ steps.task-def.outputs.task-definition }}
-          service: ${{ steps.envvalues.outputs.service }}
-          cluster: ${{ steps.envvalues.outputs.cluster }}
+          service: ${{ needs.build.outputs.service }}
+          cluster: ${{ needs.build.outputs.cluster }}
           wait-for-service-stability: true
-          # The deployment step is contingent on the previous steps (Build & Push) succeeding.
 
-      # ============================================
-      # STEP 11: Cleanup sensitive files
-      # ============================================
       - name: Cleanup
         if: always()
-        run: |
-          echo "🧹 Cleaning up sensitive files..."
-          rm -f .env task-definition.json
-          echo "✅ Cleanup complete"
+        run: rm -f task-definition.json
