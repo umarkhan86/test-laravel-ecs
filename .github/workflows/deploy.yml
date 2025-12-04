@@ -32,11 +32,11 @@ jobs:
         run: |
           if [[ "${GITHUB_REF##*/}" == "main" ]]; then
             # PRODUCTION environment values
-            echo "cluster=moneyflex-ecs-cluster" >> $GITHUB_OUTPUT
-            echo "service=moneyflex-TD-service-fx5cjmfq" >> $GITHUB_OUTPUT
-            echo "task=moneyflex-TD" >> $GITHUB_OUTPUT
-            echo "repo=157314643907.dkr.ecr.me-central-1.amazonaws.com/moneyflex-ecr" >> $GITHUB_OUTPUT
-            echo "container=moneyflex-container" >> $GITHUB_OUTPUT
+            echo "cluster=abcabcabc" >> $GITHUB_OUTPUT
+            echo "service=task-def-service-365spwxy" >> $GITHUB_OUTPUT
+            echo "task=task-def" >> $GITHUB_OUTPUT
+            echo "repo=767828751245.dkr.ecr.us-east-1.amazonaws.com/testlaravel" >> $GITHUB_OUTPUT
+            echo "container=laravel" >> $GITHUB_OUTPUT
           else
             # STAGING environment values
             echo "cluster=moneyflex-staging-cluster" >> $GITHUB_OUTPUT
